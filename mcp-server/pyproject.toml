@@ -1,0 +1,13 @@
+[project]
+name = "cerina-foundry-mcp"
+version = "1.0.0"
+description = "MCP server for Cerina Protocol Foundry"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=0.9.0",
+    "httpx>=0.27.0"
+]
+
+[project.scripts]
+cerina-foundry = "server:main"
