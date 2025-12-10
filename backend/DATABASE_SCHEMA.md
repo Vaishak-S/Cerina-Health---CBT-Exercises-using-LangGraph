@@ -11,7 +11,7 @@ postgresql://username:password@host:port/database_name
 
 **Example**:
 ```
-DATABASE_URL=postgresql://postgres:password@localhost:5432/cerina_foundry
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cerina_foundry
 ```
 
 ---
@@ -204,12 +204,7 @@ GRANT ALL PRIVILEGES ON DATABASE cerina_foundry TO cerina_user;
 
 Update `backend/.env`:
 ```bash
-DATABASE_URL=postgresql://postgres:password@localhost:5432/cerina_foundry
-```
-
-Or with custom user:
-```bash
-DATABASE_URL=postgresql://cerina_user:your_secure_password@localhost:5432/cerina_foundry
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cerina_foundry
 ```
 
 ---

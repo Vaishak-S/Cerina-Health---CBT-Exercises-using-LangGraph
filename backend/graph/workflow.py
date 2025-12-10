@@ -4,6 +4,7 @@ Implements a Supervisor-Worker pattern with autonomous loops.
 """
 from typing import Literal
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from ..models.state import ProtocolState, AgentRole, create_initial_state
 from ..agents.drafter import DrafterAgent
 from ..agents.safety_guardian import SafetyGuardianAgent
@@ -95,15 +96,15 @@ async def process_human_feedback(state: ProtocolState) -> ProtocolState:
     return state
 
 
-def create_graph(checkpointer = None):
+def create_graph(checkpointer: BaseCheckpointSaver = None) -> StateGraph:
     """
     Create the LangGraph workflow.
     
     Args:
-        checkpointer: PostgresSaver instance for persistence
+        checkpointer: Checkpoint saver for persistence
     
     Returns:
-        Compiled StateGraph with checkpointing enabled
+        Compiled StateGraph
     """
     # Initialize agents
     drafter = DrafterAgent()
@@ -124,26 +125,21 @@ def create_graph(checkpointer = None):
     # Set entry point
     workflow.set_entry_point("supervisor")
     
-    # Add conditional edges from supervisor
+    # Add conditional edges from supervisor - determines routing
     workflow.add_conditional_edges(
         "supervisor",
-        should_continue,
-        {
-            "continue": "route_agent",
-            "human_approval": "human_approval",
-            "end": END
-        }
-    )
-    
-    # Add routing node (not a real node, just routing logic)
-    workflow.add_conditional_edges(
-        "supervisor",
-        route_to_agent,
+        lambda state: (
+            "human_approval" if (state.get("requires_human_approval") and not state.get("human_approved"))
+            else "end" if state.get("completed") or state.get("human_approved")
+            else route_to_agent(state)
+        ),
         {
             "drafter": "drafter",
             "safety_guardian": "safety_guardian",
             "clinical_critic": "clinical_critic",
-            "supervisor": "supervisor"
+            "supervisor": "supervisor",
+            "human_approval": "human_approval",
+            "end": END
         }
     )
     
@@ -173,7 +169,7 @@ def create_graph(checkpointer = None):
 async def run_protocol_generation(
     user_intent: str,
     user_context: str = None,
-    checkpointer = None,
+    checkpointer: BaseCheckpointSaver = None,
     thread_id: str = "default"
 ):
     """
@@ -182,7 +178,7 @@ async def run_protocol_generation(
     Args:
         user_intent: The user's intent/request
         user_context: Optional additional context
-        checkpointer: PostgresSaver instance for persistence
+        checkpointer: Checkpoint saver for persistence
         thread_id: Thread ID for checkpointing
     
     Returns:

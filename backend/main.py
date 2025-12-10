@@ -15,7 +15,6 @@ from .database.checkpointer import get_checkpointer, init_database
 from .database.history import init_history_db, ProtocolHistory, SessionLocal
 from .graph.workflow import create_graph, create_initial_state
 from .models.state import ProtocolState
-from datetime import datetime
 
 load_dotenv()
 
@@ -36,15 +35,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize database
-init_database()
+# Initialize database and checkpointer
+checkpointer = init_database()
 init_history_db()
 
-# Get checkpointer for graph compilation
-checkpointer_connection = get_checkpointer()
-
 # Global graph instance
-graph = create_graph(checkpointer_connection)
+graph = create_graph(checkpointer)
 
 
 # Request/Response Models
@@ -127,8 +123,10 @@ async def create_protocol(request: ProtocolRequest):
         # Start workflow in background
         config = {"configurable": {"thread_id": protocol_id}}
         
-        # Run until interrupt (human approval)
-        asyncio.create_task(run_workflow_until_interrupt(protocol_id, initial_state, config))
+        # Run until interrupt (human approval) in background thread
+        import concurrent.futures
+        executor = concurrent.futures.ThreadPoolExecutor()
+        executor.submit(run_workflow_until_interrupt_sync, protocol_id, initial_state, config)
         
         return ProtocolResponse(
             protocol_id=protocol_id,
@@ -140,28 +138,41 @@ async def create_protocol(request: ProtocolRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def run_workflow_until_interrupt(protocol_id: str, initial_state: ProtocolState, config: dict):
+def run_workflow_until_interrupt_sync(protocol_id: str, initial_state: ProtocolState, config: dict):
     """Run workflow in background until it hits human approval interrupt"""
     try:
-        async for event in graph.astream(initial_state, config):
-            # Send real-time updates via WebSocket
-            await manager.send_update(protocol_id, {
+        for event in graph.stream(initial_state, config):
+            # Send real-time updates via WebSocket (sync - manager handles async)
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            loop.run_until_complete(manager.send_update(protocol_id, {
                 "type": "state_update",
                 "data": event
-            })
+            }))
             
             # Check if we hit human approval interrupt
             if event.get("requires_human_approval"):
-                await manager.send_update(protocol_id, {
+                loop.run_until_complete(manager.send_update(protocol_id, {
                     "type": "human_approval_required",
                     "protocol_id": protocol_id
-                })
+                }))
                 break
     except Exception as e:
-        await manager.send_update(protocol_id, {
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        loop.run_until_complete(manager.send_update(protocol_id, {
             "type": "error",
             "message": str(e)
-        })
+        }))
 
 
 @app.get("/api/protocols/{protocol_id}/state", response_model=StateResponse)
@@ -171,7 +182,7 @@ async def get_protocol_state(protocol_id: str):
     """
     try:
         config = {"configurable": {"thread_id": protocol_id}}
-        state = await graph.aget_state(config)
+        state = graph.get_state(config)
         
         if not state or not state.values:
             raise HTTPException(status_code=404, detail="Protocol not found")
@@ -200,7 +211,10 @@ async def get_protocol_state(protocol_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+        print(f"Error in get_protocol_state: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.post("/api/protocols/{protocol_id}/feedback")
@@ -224,7 +238,7 @@ async def submit_human_feedback(protocol_id: str, feedback: HumanFeedback):
         }
         
         # Resume workflow
-        async for event in graph.astream(update, config):
+        for event in graph.stream(update, config):
             await manager.send_update(protocol_id, {
                 "type": "state_update",
                 "data": event
