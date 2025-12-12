@@ -558,13 +558,19 @@ Cerina Health Project/
 
 5. **Test MCP Integration:**
    ```bash
-   cd mcp-server
+   # Ensure environment variables are set
+   export OPENAI_API_KEY=your_api_key_here
+   export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cerina_foundry
+   
+   # Run MCP test
    python test_mcp.py
    ```
    - Should connect to server
    - List available tools
    - Execute `generate_cbt_protocol`
    - Return formatted protocol
+   
+   **Note:** Both `test_mcp.py` and `run_protocol.py` now use environment variables for API keys instead of hardcoded values. Make sure your `.env` file is properly configured or export the variables before running these scripts.
 
 ### Database Verification
 
