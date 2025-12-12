@@ -48,8 +48,9 @@ class DrafterAgent:
             
         return base_prompt
     
-    async def __call__(self, state: ProtocolState) -> Dict[str, Any]:
+    def __call__(self, state: ProtocolState) -> Dict[str, Any]:
         """Execute the drafter agent"""
+        print(f"[DRAFTER] Starting - iteration={state['iteration_count']}, needs_revision={state.get('needs_revision')}")
         iteration = state["iteration_count"]
         
         # Create prompt
@@ -73,8 +74,10 @@ Create a complete, structured CBT exercise that addresses this intent."""
             HumanMessage(content=user_message)
         ]
         
-        response = await self.llm.ainvoke(messages)
+        response = self.llm.invoke(messages)
         draft_content = response.content
+        
+        print(f"[DRAFTER] Generated draft: {len(draft_content)} characters")
         
         # Create draft version
         new_version = DraftVersion(
@@ -90,6 +93,8 @@ Create a complete, structured CBT exercise that addresses this intent."""
             content=f"Created draft version {new_version.version}"
         )
         
+        print(f"[DRAFTER] Completed - returning draft version {new_version.version}, routing to Safety Guardian")
+        
         # Return updates to state
         return {
             "current_draft": draft_content,
@@ -99,6 +104,8 @@ Create a complete, structured CBT exercise that addresses this intent."""
             "next_agent": AgentRole.SAFETY_GUARDIAN,
             "needs_revision": False,
             "revision_reason": None,
+            "human_approved": None,  # Clear human approval flags after revision
+            "human_feedback": None,  # Clear feedback after processing
             "messages": [{
                 "role": "assistant",
                 "content": f"Drafter: Created draft v{new_version.version}"

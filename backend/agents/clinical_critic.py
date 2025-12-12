@@ -27,20 +27,23 @@ Evaluate:
 2. **Structure** (0-10): Clear steps, logical flow, actionable guidance
 3. **Clinical Appropriateness** (0-10): Evidence-based techniques, therapeutic value
 
-Provide constructive feedback and specific suggestions for improvement.
+IMPORTANT: You MUST respond with ONLY a valid JSON object. Do not include any other text.
 
-Respond with a JSON object:
+JSON format:
 {
     "empathy_score": 8.5,
     "structure_score": 7.0,
     "clinical_appropriateness": 9.0,
     "feedback": "detailed evaluation",
-    "suggestions": ["specific improvements"]
+    "suggestions": ["specific improvement 1", "specific improvement 2"]
 }
+
+All scores must be numbers between 0 and 10.
 """
     
-    async def __call__(self, state: ProtocolState) -> Dict[str, Any]:
+    def __call__(self, state: ProtocolState) -> Dict[str, Any]:
         """Execute the clinical critic agent"""
+        print(f"[CLINICAL_CRITIC] Starting clinical evaluation")
         iteration = state["iteration_count"]
         current_draft = state["current_draft"]
         
@@ -61,7 +64,9 @@ Provide your clinical assessment as JSON."""
             HumanMessage(content=user_message)
         ]
         
-        response = await self.llm.ainvoke(messages)
+        response = self.llm.invoke(messages)
+        
+        print(f"[CLINICAL_CRITIC] Raw LLM response (first 200 chars): {response.content[:200]}")
         
         # Parse JSON response
         try:
@@ -72,13 +77,16 @@ Provide your clinical assessment as JSON."""
                 content = content.split("```")[1].split("```")[0].strip()
             
             assessment_data = json.loads(content)
-        except:
+            print(f"[CLINICAL_CRITIC] Successfully parsed JSON: avg_score={(assessment_data.get('empathy_score', 0) + assessment_data.get('structure_score', 0) + assessment_data.get('clinical_appropriateness', 0)) / 3.0:.1f}")
+        except Exception as e:
             # Fallback if parsing fails
+            print(f"[CLINICAL_CRITIC] JSON parse error: {e}")
+            print(f"[CLINICAL_CRITIC] Content to parse: {response.content[:500]}")
             assessment_data = {
                 "empathy_score": 5.0,
                 "structure_score": 5.0,
                 "clinical_appropriateness": 5.0,
-                "feedback": "Unable to parse assessment",
+                "feedback": f"Unable to parse assessment: {str(e)}",
                 "suggestions": ["Manual review required"]
             }
         
@@ -103,6 +111,8 @@ Provide your clinical assessment as JSON."""
         revision_reason = None
         if needs_revision:
             revision_reason = f"Clinical quality below threshold (avg: {avg_score:.1f}/10). {clinical_assessment.feedback}"
+        
+        print(f"[CLINICAL_CRITIC] Completed - avg_score={avg_score:.1f}, needs_revision={needs_revision}")
         
         # Create scratchpad entry
         scratchpad_content = f"Scores - Empathy: {clinical_assessment.empathy_score:.1f}, "

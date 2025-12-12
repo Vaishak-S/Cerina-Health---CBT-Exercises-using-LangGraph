@@ -30,17 +30,36 @@ Check for:
 5. **Harmful techniques**: Non-evidence-based or potentially harmful methods
 6. **Boundary violations**: Inappropriate therapeutic boundaries
 
-Respond with a JSON object:
+IMPORTANT: You MUST respond with ONLY a valid JSON object. Do not include any other text.
+
+JSON format:
 {
     "level": "safe" | "needs_review" | "unsafe",
-    "concerns": ["list of specific concerns"],
-    "recommendations": ["specific fixes needed"],
-    "flagged_lines": [line numbers with issues, if applicable]
+    "concerns": ["list of specific concerns, or empty array if none"],
+    "recommendations": ["specific fixes needed, or empty array if none"],
+    "flagged_lines": []
+}
+
+Example for a safe exercise:
+{
+    "level": "safe",
+    "concerns": [],
+    "recommendations": [],
+    "flagged_lines": []
+}
+
+Example for concerns:
+{
+    "level": "needs_review",
+    "concerns": ["Exercise lacks warning about when to seek professional help"],
+    "recommendations": ["Add disclaimer about seeking professional support if anxiety worsens"],
+    "flagged_lines": []
 }
 """
     
-    async def __call__(self, state: ProtocolState) -> Dict[str, Any]:
+    def __call__(self, state: ProtocolState) -> Dict[str, Any]:
         """Execute the safety guardian agent"""
+        print(f"[SAFETY_GUARDIAN] Starting safety evaluation")
         iteration = state["iteration_count"]
         current_draft = state["current_draft"]
         
@@ -58,7 +77,9 @@ Provide your safety assessment as JSON."""
             HumanMessage(content=user_message)
         ]
         
-        response = await self.llm.ainvoke(messages)
+        response = self.llm.invoke(messages)
+        
+        print(f"[SAFETY_GUARDIAN] Raw LLM response (first 200 chars): {response.content[:200]}")
         
         # Parse JSON response
         try:
@@ -70,11 +91,14 @@ Provide your safety assessment as JSON."""
                 content = content.split("```")[1].split("```")[0].strip()
             
             assessment_data = json.loads(content)
-        except:
+            print(f"[SAFETY_GUARDIAN] Successfully parsed JSON: level={assessment_data.get('level')}")
+        except Exception as e:
             # Fallback if parsing fails
+            print(f"[SAFETY_GUARDIAN] JSON parse error: {e}")
+            print(f"[SAFETY_GUARDIAN] Content to parse: {response.content[:500]}")
             assessment_data = {
                 "level": "needs_review",
-                "concerns": ["Unable to parse safety assessment"],
+                "concerns": [f"Unable to parse safety assessment: {str(e)}"],
                 "recommendations": ["Manual review required"],
                 "flagged_lines": []
             }
@@ -105,6 +129,8 @@ Provide your safety assessment as JSON."""
         revision_reason = None
         if needs_revision:
             revision_reason = f"Safety concerns identified: {'; '.join(safety_assessment.concerns)}"
+        
+        print(f"[SAFETY_GUARDIAN] Completed - level={safety_assessment.level.value}, needs_revision={needs_revision}")
         
         # Return updates to state
         return {

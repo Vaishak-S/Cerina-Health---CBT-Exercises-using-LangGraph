@@ -10,6 +10,7 @@ import uuid
 import os
 from dotenv import load_dotenv
 import asyncio
+from datetime import datetime
 
 from .database.checkpointer import get_checkpointer, init_database
 from .database.history import init_history_db, ProtocolHistory, SessionLocal
@@ -123,10 +124,27 @@ async def create_protocol(request: ProtocolRequest):
         # Start workflow in background
         config = {"configurable": {"thread_id": protocol_id}}
         
-        # Run until interrupt (human approval) in background thread
+        # Run workflow asynchronously - it will execute until interrupt
         import concurrent.futures
-        executor = concurrent.futures.ThreadPoolExecutor()
-        executor.submit(run_workflow_until_interrupt_sync, protocol_id, initial_state, config)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(run_workflow_sync, protocol_id, initial_state, config)
+        
+        # Don't wait for result - let it run in background
+        def log_completion(fut):
+            try:
+                result = fut.result()
+                if result:
+                    print(f"[WORKFLOW] Protocol {protocol_id} completed:")
+                    print(f"  - requires_approval={result.get('requires_human_approval')}")
+                    print(f"  - completed={result.get('completed')}")
+                else:
+                    print(f"[WORKFLOW] Protocol {protocol_id}: No result returned")
+            except Exception as e:
+                print(f"[WORKFLOW ERROR] Protocol {protocol_id}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        future.add_done_callback(log_completion)
         
         return ProtocolResponse(
             protocol_id=protocol_id,
@@ -137,42 +155,39 @@ async def create_protocol(request: ProtocolRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-def run_workflow_until_interrupt_sync(protocol_id: str, initial_state: ProtocolState, config: dict):
-    """Run workflow in background until it hits human approval interrupt"""
+def run_workflow_sync(protocol_id: str, initial_state: ProtocolState, config: dict):
+    """Run workflow synchronously until it hits interrupt or completes"""
     try:
-        for event in graph.stream(initial_state, config):
-            # Send real-time updates via WebSocket (sync - manager handles async)
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            loop.run_until_complete(manager.send_update(protocol_id, {
-                "type": "state_update",
-                "data": event
-            }))
-            
-            # Check if we hit human approval interrupt
-            if event.get("requires_human_approval"):
-                loop.run_until_complete(manager.send_update(protocol_id, {
-                    "type": "human_approval_required",
-                    "protocol_id": protocol_id
-                }))
-                break
+        print(f"[WORKFLOW] Starting workflow for protocol {protocol_id}")
+        print(f"[WORKFLOW] Config: {config}")
+        print(f"[WORKFLOW] Initial state keys: {list(initial_state.keys())}")
+        
+        # Invoke will run until interrupt_before is hit or workflow completes
+        # LangGraph handles mixed sync/async nodes automatically
+        result = graph.invoke(initial_state, config)
+        
+        print(f"[WORKFLOW] Invoke returned: {type(result)}")
+        if result:
+            print(f"[WORKFLOW] Result keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
+        
+        # After invoke, get the current state from the result itself
+        # The invoke() method returns the final state dict directly
+        if result and isinstance(result, dict):
+            print(f"[WORKFLOW] Workflow stopped at checkpoint:")
+            print(f"  - iteration_count={result.get('iteration_count')}")
+            print(f"  - requires_approval={result.get('requires_human_approval')}")
+            print(f"  - completed={result.get('completed')}")
+            print(f"  - current_draft exists={bool(result.get('current_draft'))}")
+            print(f"  - current_agent={result.get('current_agent')}")
+            return result
+        else:
+            print(f"[WORKFLOW] No checkpoint found for protocol {protocol_id}")
+            return None
     except Exception as e:
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        loop.run_until_complete(manager.send_update(protocol_id, {
-            "type": "error",
-            "message": str(e)
-        }))
+        print(f"[WORKFLOW ERROR] Protocol {protocol_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 @app.get("/api/protocols/{protocol_id}/state", response_model=StateResponse)
@@ -189,12 +204,35 @@ async def get_protocol_state(protocol_id: str):
         
         values = state.values
         
+        # Convert safety assessment to dict
+        safety_dict = None
+        if values.get("safety_assessment"):
+            sa = values["safety_assessment"]
+            safety_dict = {
+                "level": sa.level.value,
+                "concerns": sa.concerns,
+                "recommendations": sa.recommendations,
+                "flagged_lines": sa.flagged_lines
+            }
+        
+        # Convert clinical assessment to dict
+        clinical_dict = None
+        if values.get("clinical_assessment"):
+            ca = values["clinical_assessment"]
+            clinical_dict = {
+                "empathy_score": ca.empathy_score,
+                "structure_score": ca.structure_score,
+                "clinical_appropriateness": ca.clinical_appropriateness,
+                "feedback": ca.feedback,
+                "suggestions": ca.suggestions
+            }
+        
         return StateResponse(
             protocol_id=protocol_id,
             current_draft=values.get("current_draft", ""),
             iteration_count=values.get("iteration_count", 0),
-            safety_assessment=values.get("safety_assessment"),
-            clinical_assessment=values.get("clinical_assessment"),
+            safety_assessment=safety_dict,
+            clinical_assessment=clinical_dict,
             scratchpad=[
                 {
                     "agent": entry.agent.value,
@@ -225,24 +263,71 @@ async def submit_human_feedback(protocol_id: str, feedback: HumanFeedback):
     try:
         config = {"configurable": {"thread_id": protocol_id}}
         
-        # Get current state
-        state = await graph.aget_state(config)
+        # Get current state (use sync method)
+        state = graph.get_state(config)
         if not state or not state.values:
             raise HTTPException(status_code=404, detail="Protocol not found")
         
-        # Update state with human feedback
+        print(f"[FEEDBACK] Received for protocol {protocol_id}: approved={feedback.approved}")
+        
+        # Update the state with human feedback FIRST using update_state
         update = {
-            "human_approved": feedback.approved,
-            "human_feedback": feedback.feedback,
-            "human_edits": feedback.edits
+            "requires_human_approval": False  # Clear the flag to allow workflow to continue
         }
         
-        # Resume workflow
-        for event in graph.stream(update, config):
-            await manager.send_update(protocol_id, {
-                "type": "state_update",
-                "data": event
-            })
+        # If approved, mark as completed
+        if feedback.approved:
+            update["human_approved"] = True
+            update["completed"] = True
+            update["final_protocol"] = None  # Will be set by process_human_feedback node
+            print(f"[FEEDBACK] Workflow approved - marking as completed")
+        else:
+            # Request revision - send back to agents
+            update["human_approved"] = False
+            update["human_feedback"] = feedback.feedback or "Human requested revisions"
+            update["needs_revision"] = True
+            update["revision_reason"] = feedback.feedback or "Human requested revisions"
+            update["next_agent"] = "drafter"  # Route back to drafter
+            # Clear assessments so they're re-evaluated
+            update["safety_assessment"] = None
+            update["clinical_assessment"] = None
+            print(f"[FEEDBACK] Revision requested - clearing assessments and routing to drafter")
+        
+        if feedback.edits:
+            update["human_edits"] = feedback.edits
+        
+        # Update state before resuming
+        graph.update_state(config, update)
+        print(f"[FEEDBACK] State updated")
+        
+        # Resume workflow in background to run final nodes
+        import concurrent.futures
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        
+        def resume_workflow():
+            print(f"[FEEDBACK] Resuming workflow for {protocol_id}")
+            try:
+                # Resume from interrupt by invoking with None
+                result = graph.invoke(None, config)
+                print(f"[FEEDBACK] Workflow step completed for {protocol_id}")
+                print(f"[FEEDBACK] Final state: completed={result.get('completed')}, requires_approval={result.get('requires_human_approval')}")
+                return result
+            except Exception as e:
+                print(f"[FEEDBACK ERROR] {protocol_id}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        future = executor.submit(resume_workflow)
+        
+        # Don't wait - let it complete in background
+        def log_completion(fut):
+            try:
+                result = fut.result()
+                print(f"[FEEDBACK] Protocol {protocol_id} finalized")
+            except Exception as e:
+                print(f"[FEEDBACK ERROR] Protocol {protocol_id}: {e}")
+        
+        future.add_done_callback(log_completion)
         
         # Update history
         db = SessionLocal()
@@ -252,6 +337,9 @@ async def submit_human_feedback(protocol_id: str, feedback: HumanFeedback):
             history.human_feedback = feedback.feedback
             if feedback.edits:
                 history.final_protocol = feedback.edits
+            elif feedback.approved:
+                # If approved without edits, use current draft as final
+                history.final_protocol = state.values.get("current_draft")
             history.completed_at = datetime.utcnow()
             db.commit()
         db.close()

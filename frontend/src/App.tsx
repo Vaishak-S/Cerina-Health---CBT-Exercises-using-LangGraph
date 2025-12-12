@@ -83,10 +83,25 @@ function App() {
       const data = await response.json()
       setState(data)
       setEditedDraft(data.current_draft)
+      
+      // Stop loading when we have state
+      if (data) {
+        setLoading(false)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error')
+      setLoading(false)
     }
   }
+
+  // Polling effect - continuously fetch state while workflow is active
+  useEffect(() => {
+    if (!protocolId || state?.completed) return
+
+    const pollInterval = setInterval(fetchState, 2000) // Poll every 2 seconds
+
+    return () => clearInterval(pollInterval)
+  }, [protocolId, state?.completed])
 
   const handleCreateProtocol = async () => {
     if (!userIntent.trim()) {
@@ -123,27 +138,51 @@ function App() {
   }
 
   const handleSubmitFeedback = async (approved: boolean) => {
-    if (!protocolId) return
+    if (!protocolId) {
+      console.error('No protocol ID available')
+      return
+    }
 
+    console.log(`Submitting feedback: approved=${approved}, protocolId=${protocolId}`)
     setLoading(true)
     setError(null)
 
     try {
+      const payload = {
+        approved,
+        feedback: humanFeedback || undefined,
+        edits: approved && editedDraft !== state?.current_draft ? editedDraft : undefined
+      }
+      
+      console.log('Feedback payload:', payload)
+      
       const response = await fetch(`${API_BASE}/api/protocols/${protocolId}/feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          approved,
-          feedback: humanFeedback || undefined,
-          edits: approved && editedDraft !== state?.current_draft ? editedDraft : undefined
-        })
+        body: JSON.stringify(payload)
       })
 
-      if (!response.ok) throw new Error('Failed to submit feedback')
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('Feedback submission failed:', response.status, errorText)
+        throw new Error(`Failed to submit feedback: ${response.status}`)
+      }
 
-      // Fetch updated state
-      setTimeout(fetchState, 1000)
+      const result = await response.json()
+      console.log('Feedback submitted successfully:', result)
+
+      // Clear feedback textarea after submission
+      setHumanFeedback('')
+      
+      // Fetch updated state immediately
+      await fetchState()
+      
+      // Continue polling if not completed
+      if (!approved) {
+        setTimeout(fetchState, 2000)
+      }
     } catch (err) {
+      console.error('Error submitting feedback:', err)
       setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
       setLoading(false)
@@ -204,13 +243,26 @@ function App() {
         ) : (
           <div className="workflow-section">
             <div className="workflow-header">
-              <h2>Protocol Generation in Progress</h2>
+              <h2>
+                {state?.completed 
+                  ? '✅ Protocol Complete' 
+                  : state?.requires_human_approval 
+                    ? '⏸️ Awaiting Human Review' 
+                    : '🔄 Protocol Generation in Progress'}
+              </h2>
               <span className="protocol-id">ID: {protocolId}</span>
             </div>
 
             {error && (
               <div className="alert alert-error">
                 <strong>Error:</strong> {error}
+              </div>
+            )}
+
+            {!state && loading && (
+              <div className="loading-state">
+                <div className="spinner"></div>
+                <p>Initializing workflow and waiting for agents...</p>
               </div>
             )}
 
@@ -316,18 +368,24 @@ function App() {
 
                     <div className="button-group">
                       <button 
-                        onClick={() => handleSubmitFeedback(false)}
+                        onClick={() => {
+                          console.log('Request Revision button clicked')
+                          handleSubmitFeedback(false)
+                        }}
                         className="btn btn-secondary"
                         disabled={loading}
                       >
-                        Request Revision
+                        {loading ? 'Submitting...' : 'Request Revision'}
                       </button>
                       <button 
-                        onClick={() => handleSubmitFeedback(true)}
+                        onClick={() => {
+                          console.log('Approve Protocol button clicked')
+                          handleSubmitFeedback(true)
+                        }}
                         className="btn btn-success"
                         disabled={loading}
                       >
-                        ✓ Approve Protocol
+                        {loading ? 'Submitting...' : '✓ Approve Protocol'}
                       </button>
                     </div>
                   </div>

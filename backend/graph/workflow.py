@@ -16,32 +16,35 @@ def should_continue(state: ProtocolState) -> Literal["continue", "human_approval
     """
     Routing function to determine next step in workflow.
     """
-    # If human approval is required, route to human node
-    if state.get("requires_human_approval") and not state.get("human_approved"):
-        return "human_approval"
+    print(f"[SHOULD_CONTINUE] completed={state.get('completed')}, human_approved={state.get('human_approved')}, requires_approval={state.get('requires_human_approval')}")
     
-    # If human approved and we have human edits, process them
-    if state.get("human_approved"):
-        if state.get("human_edits"):
-            # Route back to validation with human edits
-            return "continue"
-        else:
-            # Workflow complete
-            return "end"
-    
-    # If completed flag is set, end
+    # If completed flag is set, end immediately
     if state.get("completed"):
+        print("[SHOULD_CONTINUE] -> end (completed=True)")
         return "end"
+    
+    # If human approved, workflow complete
+    if state.get("human_approved"):
+        print("[SHOULD_CONTINUE] -> end (human_approved=True)")
+        return "end"
+    
+    # If human approval is required, route to human node
+    if state.get("requires_human_approval"):
+        print("[SHOULD_CONTINUE] -> human_approval (requires_approval=True)")
+        return "human_approval"
     
     # Check if we should continue iterating
     if state["iteration_count"] >= state["max_iterations"]:
+        print("[SHOULD_CONTINUE] -> human_approval (max iterations reached)")
         return "human_approval"
     
     # Continue workflow
     if state.get("next_agent"):
+        print(f"[SHOULD_CONTINUE] -> continue (next_agent={state.get('next_agent')})")
         return "continue"
     
     # Default to human approval if no clear next step
+    print("[SHOULD_CONTINUE] -> human_approval (default)")
     return "human_approval"
 
 
@@ -64,13 +67,16 @@ def route_to_agent(state: ProtocolState) -> str:
         return "supervisor"
 
 
-async def process_human_feedback(state: ProtocolState) -> ProtocolState:
+def process_human_feedback(state: ProtocolState) -> ProtocolState:
     """
     Process human feedback and edits.
     This node waits for human input via interrupt.
     """
+    print(f"[PROCESS_FEEDBACK] human_approved={state.get('human_approved')}, human_edits={bool(state.get('human_edits'))}")
+    
     # If human has approved and provided edits, apply them
     if state.get("human_edits"):
+        print("[PROCESS_FEEDBACK] Applying human edits and completing workflow")
         return {
             "current_draft": state["human_edits"],
             "final_protocol": state["human_edits"],
@@ -82,6 +88,7 @@ async def process_human_feedback(state: ProtocolState) -> ProtocolState:
         }
     elif state.get("human_approved"):
         # No edits, just approval
+        print("[PROCESS_FEEDBACK] Human approved without edits - completing workflow")
         return {
             "final_protocol": state["current_draft"],
             "completed": True,
@@ -93,6 +100,7 @@ async def process_human_feedback(state: ProtocolState) -> ProtocolState:
     
     # If we reach here without approval, this is the interrupt point
     # The workflow will pause here waiting for human input
+    print("[PROCESS_FEEDBACK] No approval yet - returning to supervisor for revision")
     return state
 
 
@@ -126,13 +134,28 @@ def create_graph(checkpointer: BaseCheckpointSaver = None) -> StateGraph:
     workflow.set_entry_point("supervisor")
     
     # Add conditional edges from supervisor - determines routing
+    def supervisor_router(state):
+        """Debug routing from supervisor"""
+        requires_approval = state.get("requires_human_approval") and not state.get("human_approved")
+        completed_or_approved = state.get("completed") or state.get("human_approved")
+        
+        print(f"[ROUTER] requires_approval={requires_approval}, completed={completed_or_approved}")
+        print(f"[ROUTER] next_agent={state.get('next_agent')}")
+        
+        if requires_approval:
+            print("[ROUTER] -> human_approval")
+            return "human_approval"
+        elif completed_or_approved:
+            print("[ROUTER] -> end")
+            return "end"
+        else:
+            result = route_to_agent(state)
+            print(f"[ROUTER] -> {result}")
+            return result
+    
     workflow.add_conditional_edges(
         "supervisor",
-        lambda state: (
-            "human_approval" if (state.get("requires_human_approval") and not state.get("human_approved"))
-            else "end" if state.get("completed") or state.get("human_approved")
-            else route_to_agent(state)
-        ),
+        supervisor_router,
         {
             "drafter": "drafter",
             "safety_guardian": "safety_guardian",

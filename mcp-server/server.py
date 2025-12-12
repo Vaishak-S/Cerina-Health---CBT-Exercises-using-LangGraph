@@ -80,7 +80,7 @@ async def call_tool(name: str, arguments: Any) -> list[types.TextContent]:
     # Create initial state
     initial_state = create_initial_state(user_intent, user_context)
     
-    # Run workflow
+    # Run workflow synchronously in executor
     config = {"configurable": {"thread_id": thread_id}}
     
     result_text = f"# CBT Protocol Generation\n\n**Intent:** {user_intent}\n\n"
@@ -89,57 +89,37 @@ async def call_tool(name: str, arguments: Any) -> list[types.TextContent]:
     
     result_text += "## Agent Deliberation\n\n"
     
-    final_state = None
-    iteration_count = 0
-    
     try:
-        # Run until human approval interrupt
-        async for event in graph.astream(initial_state, config, stream_mode="values"):
-            final_state = event
-            iteration_count += 1
-            
-            # Add scratchpad entries to result
-            if event.get("scratchpad"):
-                for entry in event["scratchpad"][-1:]:  # Show latest entry
-                    result_text += f"**{entry.agent.value.upper()}** (Iteration {entry.iteration}): {entry.content}\n\n"
-            
-            # Check if we need human approval
-            if event.get("requires_human_approval"):
-                result_text += "---\n\n## Draft Protocol\n\n"
-                result_text += event.get("current_draft", "")
-                result_text += "\n\n---\n\n"
-                
-                # Auto-approve for MCP (since no human in the loop here)
-                result_text += "*Note: In MCP mode, protocol is auto-approved. Use the React UI for human-in-the-loop review.*\n\n"
-                
-                # Update state to approve
-                await graph.aupdate_state(
-                    config,
-                    {"human_approved": True, "completed": True}
-                )
-                
-                # Get final state
-                final_state_obj = await graph.aget_state(config)
-                final_state = final_state_obj.values
-                break
-            
-            # Prevent infinite loops
-            if iteration_count > 20:
-                result_text += "\n\n*Maximum iterations reached. Workflow terminated.*\n"
-                break
+        # Run workflow in thread pool since we're using sync checkpointer
+        import concurrent.futures
         
-        # Add final protocol
-        if final_state and final_state.get("final_protocol"):
-            result_text += "## Final Protocol\n\n"
-            result_text += final_state["final_protocol"]
-        elif final_state and final_state.get("current_draft"):
-            result_text += "## Final Protocol\n\n"
+        def run_workflow():
+            # Run until interrupt (human approval)
+            result = graph.invoke(initial_state, config)
+            return result
+        
+        # Execute in thread pool
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            final_state = await loop.run_in_executor(executor, run_workflow)
+        
+        # Add scratchpad entries to result
+        if final_state and final_state.get("scratchpad"):
+            result_text += "### Workflow Log\n\n"
+            for entry in final_state["scratchpad"]:
+                result_text += f"**{entry.agent.value.upper()}** (Iteration {entry.iteration}): {entry.content}\n\n"
+        
+        result_text += "---\n\n## Generated Protocol\n\n"
+        
+        if final_state and final_state.get("current_draft"):
             result_text += final_state["current_draft"]
+        
+        result_text += "\n\n---\n\n"
         
         # Add assessments
         if final_state and final_state.get("safety_assessment"):
             safety = final_state["safety_assessment"]
-            result_text += f"\n\n### Safety Assessment\n- Level: {safety.level.value}\n"
+            result_text += f"### Safety Assessment\n- Level: {safety.level.value}\n"
             if safety.concerns:
                 result_text += f"- Concerns: {', '.join(safety.concerns)}\n"
         
@@ -149,9 +129,13 @@ async def call_tool(name: str, arguments: Any) -> list[types.TextContent]:
             result_text += f"- Empathy: {clinical.empathy_score}/10\n"
             result_text += f"- Structure: {clinical.structure_score}/10\n"
             result_text += f"- Clinical Appropriateness: {clinical.clinical_appropriateness}/10\n"
+        
+        result_text += f"\n\n*Note: In MCP mode, workflow pauses at human approval. Protocol ID: {thread_id}*\n"
+        result_text += "*Use the React UI (http://localhost:5173) for human-in-the-loop review and approval.*\n"
     
     except Exception as e:
-        result_text += f"\n\n**Error:** {str(e)}\n"
+        import traceback
+        result_text += f"\n\n**Error:** {str(e)}\n```\n{traceback.format_exc()}\n```\n"
     
     return [types.TextContent(type="text", text=result_text)]
 
