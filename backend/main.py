@@ -65,6 +65,7 @@ class HumanFeedback(BaseModel):
 class StateResponse(BaseModel):
     protocol_id: str
     current_draft: str
+    draft_versions: List[dict]
     iteration_count: int
     safety_assessment: Optional[dict] = None
     clinical_assessment: Optional[dict] = None
@@ -227,9 +228,20 @@ async def get_protocol_state(protocol_id: str):
                 "suggestions": ca.suggestions
             }
         
+        # Convert draft versions to dict
+        draft_versions_list = []
+        for version in values.get("draft_versions", []):
+            draft_versions_list.append({
+                "version": version.version,
+                "content": version.content,
+                "timestamp": version.timestamp.isoformat(),
+                "created_by": version.created_by.value
+            })
+        
         return StateResponse(
             protocol_id=protocol_id,
             current_draft=values.get("current_draft", ""),
+            draft_versions=draft_versions_list,
             iteration_count=values.get("iteration_count", 0),
             safety_assessment=safety_dict,
             clinical_assessment=clinical_dict,
@@ -279,7 +291,14 @@ async def submit_human_feedback(protocol_id: str, feedback: HumanFeedback):
         if feedback.approved:
             update["human_approved"] = True
             update["completed"] = True
-            update["final_protocol"] = None  # Will be set by process_human_feedback node
+            # If user provided edits, apply them immediately to current_draft
+            if feedback.edits:
+                update["current_draft"] = feedback.edits
+                update["final_protocol"] = feedback.edits
+                print(f"[FEEDBACK] Applying edits immediately to current_draft")
+            else:
+                # No edits - use existing draft as final
+                update["final_protocol"] = state.values.get("current_draft")
             print(f"[FEEDBACK] Workflow approved - marking as completed")
         else:
             # Request revision - send back to agents
@@ -288,13 +307,16 @@ async def submit_human_feedback(protocol_id: str, feedback: HumanFeedback):
             update["needs_revision"] = True
             update["revision_reason"] = feedback.feedback or "Human requested revisions"
             update["next_agent"] = "drafter"  # Route back to drafter
+            update["completed"] = False  # Ensure workflow is not marked complete
             # Clear assessments so they're re-evaluated
             update["safety_assessment"] = None
             update["clinical_assessment"] = None
+            # If user edited before requesting revision, use the edited version
+            if feedback.edits:
+                update["current_draft"] = feedback.edits
+                update["human_edits"] = feedback.edits
+                print(f"[FEEDBACK] Revision requested with edits - updating current_draft")
             print(f"[FEEDBACK] Revision requested - clearing assessments and routing to drafter")
-        
-        if feedback.edits:
-            update["human_edits"] = feedback.edits
         
         # Update state before resuming
         graph.update_state(config, update)

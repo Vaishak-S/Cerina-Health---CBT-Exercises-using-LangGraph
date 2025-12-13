@@ -314,6 +314,8 @@
   font-size: 0.95rem;
   line-height: 1.6;
   resize: vertical;
+  color: #2c3e50;
+  background: white;
 }
 
 .draft-editor:focus {
@@ -391,4 +393,181 @@
 .loading-state p {
   color: #7f8c8d;
   font-size: 1.1rem;
+}
+
+/* Version History Panel */
+.version-panel {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1.5rem;
+}
+
+.version-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.version-header h3 {
+  margin: 0;
+  color: #2c3e50;
+}
+
+.btn-small {
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+}
+
+.btn-active {
+  background: #27ae60 !important;
+  color: white !important;
+}
+
+.version-list {
+  margin-top: 1rem;
+}
+
+.version-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  border: 2px solid #e1e8ed;
+  border-radius: 8px;
+  margin-bottom: 0.75rem;
+  transition: all 0.3s;
+}
+
+.version-item:hover {
+  border-color: #667eea;
+  background: #f8f9fa;
+}
+
+.version-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.version-info strong {
+  color: #2c3e50;
+  font-size: 1rem;
+}
+
+.version-meta {
+  color: #7f8c8d;
+  font-size: 0.85rem;
+}
+
+.version-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.version-compare {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 2px solid #667eea;
+}
+
+.version-compare h4 {
+  margin-top: 0;
+  color: #2c3e50;
+  margin-bottom: 1rem;
+}
+
+.diff-viewer {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid #e1e8ed;
+}
+
+.diff-content {
+  line-height: 1.8;
+  font-family: 'Courier New', monospace;
+  font-size: 0.95rem;
+}
+
+.diff-word {
+  padding: 2px 4px;
+  border-radius: 3px;
+  white-space: pre-wrap;
+}
+
+.diff-same {
+  color: #2c3e50;
+}
+
+.diff-add {
+  background: #d4edda;
+  color: #155724;
+  font-weight: 600;
+}
+
+.diff-remove {
+  background: #f8d7da;
+  color: #721c24;
+  text-decoration: line-through;
+  font-weight: 600;
+}
+
+/* Version Viewer */
+.version-viewer {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  background: white;
+  border-radius: 8px;
+  border: 2px solid #667eea;
+}
+
+.version-viewer h4 {
+  margin-top: 0;
+  color: #2c3e50;
+  margin-bottom: 1rem;
+}
+
+.version-content {
+  background: #f8f9fa;
+  padding: 1.5rem;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  line-height: 1.8;
+  color: #2c3e50;
+  max-height: 400px;
+  overflow-y: auto;
+  margin-bottom: 1rem;
+  border: 1px solid #e1e8ed;
+}
+
+/* Edit Notice */
+.edit-notice {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 6px;
+  color: #856404;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* Make draft editor more prominent when editable */
+.draft-editor:not(:disabled) {
+  border: 2px solid #667eea;
+  background: white;
+}
+
+.draft-editor:disabled {
+  background: #f8f9fa;
+  cursor: not-allowed;
 }

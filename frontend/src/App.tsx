@@ -21,9 +21,17 @@ interface ClinicalAssessment {
   feedback: string
 }
 
+interface DraftVersion {
+  version: number
+  content: string
+  timestamp: string
+  created_by: string
+}
+
 interface ProtocolState {
   protocol_id: string
   current_draft: string
+  draft_versions: DraftVersion[]
   iteration_count: number
   safety_assessment?: SafetyAssessment
   clinical_assessment?: ClinicalAssessment
@@ -41,7 +49,11 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [editedDraft, setEditedDraft] = useState('')
   const [humanFeedback, setHumanFeedback] = useState('')
+  const [showVersionHistory, setShowVersionHistory] = useState(false)
+  const [selectedVersions, setSelectedVersions] = useState<[number, number] | null>(null)
+  const [viewingVersion, setViewingVersion] = useState<number | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const userIsEditingRef = useRef(false)
 
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -82,7 +94,11 @@ function App() {
       
       const data = await response.json()
       setState(data)
-      setEditedDraft(data.current_draft)
+      
+      // Only update editedDraft if user is not actively editing
+      if (!userIsEditingRef.current) {
+        setEditedDraft(data.current_draft)
+      }
       
       // Stop loading when we have state
       if (data) {
@@ -174,7 +190,20 @@ function App() {
       // Clear feedback textarea after submission
       setHumanFeedback('')
       
-      // Fetch updated state immediately
+      // If user approved with edits, keep the edited draft visible
+      const hasEdits = approved && editedDraft !== state?.current_draft
+      
+      if (hasEdits) {
+        // Keep showing the edited version immediately
+        console.log('Preserving edited draft in UI')
+      }
+      
+      // Reset editing flag so polling can resume
+      userIsEditingRef.current = false
+      
+      // Wait for backend to process the approval (workflow runs in background)
+      // Then fetch updated state
+      await new Promise(resolve => setTimeout(resolve, 2000))
       await fetchState()
       
       // Continue polling if not completed
@@ -197,6 +226,43 @@ function App() {
       supervisor: '#F39C12'
     }
     return colors[agent] || '#95A5A6'
+  }
+
+  // Simple word-level diff generator
+  const generateDiff = (oldText: string, newText: string) => {
+    const oldWords = oldText.split(/\s+/)
+    const newWords = newText.split(/\s+/)
+    const result: Array<{ type: 'add' | 'remove' | 'same', text: string }> = []
+    
+    let i = 0, j = 0
+    while (i < oldWords.length || j < newWords.length) {
+      if (i >= oldWords.length) {
+        result.push({ type: 'add', text: newWords[j] })
+        j++
+      } else if (j >= newWords.length) {
+        result.push({ type: 'remove', text: oldWords[i] })
+        i++
+      } else if (oldWords[i] === newWords[j]) {
+        result.push({ type: 'same', text: oldWords[i] })
+        i++
+        j++
+      } else {
+        // Simple heuristic: check if next word matches
+        if (oldWords[i + 1] === newWords[j]) {
+          result.push({ type: 'remove', text: oldWords[i] })
+          i++
+        } else if (oldWords[i] === newWords[j + 1]) {
+          result.push({ type: 'add', text: newWords[j] })
+          j++
+        } else {
+          result.push({ type: 'remove', text: oldWords[i] })
+          result.push({ type: 'add', text: newWords[j] })
+          i++
+          j++
+        }
+      }
+    }
+    return result
   }
 
   return (
@@ -336,17 +402,101 @@ function App() {
                   )}
                 </div>
 
+                {/* Version History */}
+                {state.draft_versions && state.draft_versions.length > 1 && (
+                  <div className="version-panel">
+                    <div className="version-header">
+                      <h3>📚 Previous Drafts ({state.draft_versions.length - 1} version{state.draft_versions.length - 1 !== 1 ? 's' : ''})</h3>
+                      <button 
+                        onClick={() => setShowVersionHistory(!showVersionHistory)}
+                        className="btn btn-small"
+                      >
+                        {showVersionHistory ? 'Hide Previous Drafts' : 'Show Previous Drafts'}
+                      </button>
+                    </div>
+
+                    {showVersionHistory && (
+                      <div className="version-list">
+                        {state.draft_versions.slice(0, -1).map((version, idx) => (
+                          <div key={idx} className="version-item">
+                            <div className="version-info">
+                              <strong>Version {version.version}</strong>
+                              <span className="version-meta">
+                                by {version.created_by} • {new Date(version.timestamp).toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="version-actions">
+                              <button
+                                onClick={() => setViewingVersion(viewingVersion === version.version ? null : version.version)}
+                                className={`btn btn-small ${viewingVersion === version.version ? 'btn-active' : ''}`}
+                              >
+                                {viewingVersion === version.version ? '👁️ Viewing' : '👁️ View'}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+
+                        {viewingVersion && (
+                          <div className="version-viewer">
+                            {(() => {
+                              const version = state.draft_versions.find(v => v.version === viewingVersion)
+                              if (!version) return null
+                              return (
+                                <>
+                                  <h4>📄 Viewing Version {version.version}</h4>
+                                  <div className="version-content">
+                                    {version.content}
+                                  </div>
+                                  <button
+                                    onClick={() => setViewingVersion(null)}
+                                    className="btn btn-secondary btn-small"
+                                  >
+                                    Close
+                                  </button>
+                                </>
+                              )
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Current Draft */}
                 {state.current_draft && (
                   <div className="draft-panel">
-                    <h3>📝 Current Draft (Iteration {state.iteration_count})</h3>
-                    <textarea
-                      value={editedDraft}
-                      onChange={(e) => setEditedDraft(e.target.value)}
-                      rows={15}
-                      className="draft-editor"
-                      disabled={!state.requires_human_approval || state.completed}
-                    />
+                    <h3>📝 Current Draft (Version {state.draft_versions?.length || state.iteration_count})</h3>
+                    {state.requires_human_approval && !state.completed ? (
+                      <textarea
+                        value={editedDraft}
+                        onChange={(e) => {
+                          userIsEditingRef.current = true
+                          setEditedDraft(e.target.value)
+                        }}
+                        onBlur={() => {
+                          // Keep editing flag for a bit after blur to prevent race conditions
+                          setTimeout(() => {
+                            if (editedDraft === state?.current_draft) {
+                              userIsEditingRef.current = false
+                            }
+                          }, 500)
+                        }}
+                        rows={15}
+                        className="draft-editor"
+                        placeholder="Edit the draft here before approval..."
+                      />
+                    ) : (
+                      <textarea
+                        value={state.current_draft}
+                        rows={15}
+                        className="draft-editor"
+                        disabled
+                      />
+                    )}
+                    {state.requires_human_approval && !state.completed && editedDraft !== state.current_draft && (
+                      <p className="edit-notice">✏️ You have made edits to this draft</p>
+                    )}
                   </div>
                 )}
 
