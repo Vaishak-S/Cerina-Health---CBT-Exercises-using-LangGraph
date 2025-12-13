@@ -52,6 +52,8 @@ function App() {
   const [showVersionHistory, setShowVersionHistory] = useState(false)
   const [selectedVersions, setSelectedVersions] = useState<[number, number] | null>(null)
   const [viewingVersion, setViewingVersion] = useState<number | null>(null)
+  const [showResumePrompt, setShowResumePrompt] = useState(false)
+  const [incompleteProtocolId, setIncompleteProtocolId] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const userIsEditingRef = useRef(false)
 
@@ -118,6 +120,86 @@ function App() {
 
     return () => clearInterval(pollInterval)
   }, [protocolId, state?.completed])
+
+  // Auto-load latest protocol on mount if no protocol ID in URL
+  useEffect(() => {
+    const loadLatestProtocol = async () => {
+      if (protocolId) return // Already have a protocol ID
+      
+      // Check if user had an active session before (stored in sessionStorage)
+      const hadActiveSession = sessionStorage.getItem('activeProtocol')
+      
+      try {
+        const response = await fetch(`${API_BASE}/api/protocols/latest`)
+        if (response.ok) {
+          const data = await response.json()
+          console.log('Found incomplete protocol:', data.protocol_id)
+          
+          // Only show prompt if user had an active session before this page load
+          // This means they were working on something and refreshed/server crashed
+          if (hadActiveSession) {
+            setIncompleteProtocolId(data.protocol_id)
+            setShowResumePrompt(true)
+          }
+          // If no active session, this is first load - don't prompt
+        }
+      } catch (err) {
+        console.log('No incomplete protocols to resume')
+      } finally {
+        // Clear the session flag since we've checked
+        sessionStorage.removeItem('activeProtocol')
+      }
+    }
+    
+    loadLatestProtocol()
+  }, []) // Run once on mount
+
+  // Track when user starts working on a protocol
+  useEffect(() => {
+    if (protocolId) {
+      sessionStorage.setItem('activeProtocol', protocolId)
+    }
+  }, [protocolId])
+
+  const handleResumeProtocol = async () => {
+    if (incompleteProtocolId) {
+      setProtocolId(incompleteProtocolId)
+      setShowResumePrompt(false)
+      await fetchState()
+    }
+  }
+
+  const handleStartFresh = () => {
+    setShowResumePrompt(false)
+    setIncompleteProtocolId(null)
+  }
+
+  const handleSaveDraft = async () => {
+    if (!protocolId || !editedDraft) return
+    
+    setLoading(true)
+    setError(null)
+    
+    try {
+      const response = await fetch(`${API_BASE}/api/protocols/${protocolId}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draft: editedDraft })
+      })
+      
+      if (!response.ok) throw new Error('Failed to save draft')
+      
+      const result = await response.json()
+      alert(`✅ Draft saved successfully as Version ${result.version}!`)
+      
+      // Refresh state to show new version in history
+      await fetchState()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save draft')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const handleCreateProtocol = async () => {
     if (!userIntent.trim()) {
@@ -273,6 +355,25 @@ function App() {
       </header>
 
       <div className="container">
+        {/* Resume Prompt Modal */}
+        {showResumePrompt && (
+          <div className="modal-overlay">
+            <div className="modal-content">
+              <h2>⚠️ Incomplete Session Detected</h2>
+              <p>We found an incomplete protocol session. Would you like to resume it?</p>
+              <p className="protocol-id-hint">Protocol ID: {incompleteProtocolId?.substring(0, 8)}...</p>
+              <div className="modal-actions">
+                <button onClick={handleResumeProtocol} className="btn btn-primary">
+                  ▶️ Resume Session
+                </button>
+                <button onClick={handleStartFresh} className="btn btn-secondary">
+                  🆕 Start Fresh
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {!protocolId ? (
           <div className="input-section">
             <h2>Create New Protocol</h2>
@@ -467,6 +568,13 @@ function App() {
                 {state.current_draft && (
                   <div className="draft-panel">
                     <h3>📝 Current Draft (Version {state.draft_versions?.length || state.iteration_count})</h3>
+                    
+                    {state.requires_human_approval && !state.completed && (
+                      <div className="save-notice">
+                        ⚠️ <strong>Important:</strong> Press the SAVE button below to save this draft to the database. Edits are not automatically saved.
+                      </div>
+                    )}
+                    
                     {state.requires_human_approval && !state.completed ? (
                       <textarea
                         value={editedDraft}
@@ -494,8 +602,20 @@ function App() {
                         disabled
                       />
                     )}
-                    {state.requires_human_approval && !state.completed && editedDraft !== state.current_draft && (
-                      <p className="edit-notice">✏️ You have made edits to this draft</p>
+                    
+                    {state.requires_human_approval && !state.completed && (
+                      <div className="draft-actions">
+                        {editedDraft !== state.current_draft && (
+                          <p className="edit-notice">✏️ You have made edits to this draft</p>
+                        )}
+                        <button
+                          onClick={handleSaveDraft}
+                          disabled={loading || !editedDraft}
+                          className="btn btn-save"
+                        >
+                          💾 Save Draft
+                        </button>
+                      </div>
                     )}
                   </div>
                 )}

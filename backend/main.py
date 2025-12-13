@@ -99,6 +99,40 @@ manager = ConnectionManager()
 
 
 # API Endpoints
+@app.get("/api/protocols/latest")
+async def get_latest_protocol():
+    """
+    Get the most recently created incomplete protocol ID.
+    Only returns if it's the absolute latest protocol (indicating potential server failure).
+    Returns 404 if no incomplete protocols exist or if completed protocols are newer.
+    """
+    try:
+        db = SessionLocal()
+        
+        # Get the absolute latest protocol (completed or not)
+        absolute_latest = db.query(ProtocolHistory).order_by(
+            ProtocolHistory.created_at.desc()
+        ).first()
+        
+        if not absolute_latest:
+            db.close()
+            raise HTTPException(status_code=404, detail="No protocols found")
+        
+        # Only return if the latest protocol is incomplete (suggests server failure)
+        if absolute_latest.completed_at is None:
+            db.close()
+            return {"protocol_id": absolute_latest.id}
+        
+        # If latest protocol is complete, no need to auto-resume
+        db.close()
+        raise HTTPException(status_code=404, detail="No incomplete protocols to resume")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/protocols", response_model=ProtocolResponse)
 async def create_protocol(request: ProtocolRequest):
     """
@@ -315,8 +349,23 @@ async def submit_human_feedback(protocol_id: str, feedback: HumanFeedback):
             if feedback.edits:
                 update["current_draft"] = feedback.edits
                 update["human_edits"] = feedback.edits
-                print(f"[FEEDBACK] Revision requested with edits - updating current_draft")
-            print(f"[FEEDBACK] Revision requested - clearing assessments and routing to drafter")
+                
+                # Add edited version to history
+                from backend.models.state import DraftVersion, AgentRole
+                from datetime import datetime
+                
+                current_versions = state.values.get("draft_versions", [])
+                new_version = DraftVersion(
+                    version=len(current_versions) + 1,
+                    content=feedback.edits,
+                    timestamp=datetime.utcnow(),
+                    created_by=AgentRole.HUMAN
+                )
+                update["draft_versions"] = [new_version]
+                
+                print(f"[FEEDBACK] Revision requested with edits - updating current_draft and creating version {new_version.version}")
+            else:
+                print(f"[FEEDBACK] Revision requested without edits")
         
         # Update state before resuming
         graph.update_state(config, update)
@@ -351,18 +400,27 @@ async def submit_human_feedback(protocol_id: str, feedback: HumanFeedback):
         
         future.add_done_callback(log_completion)
         
-        # Update history
+        # Update history immediately
         db = SessionLocal()
         history = db.query(ProtocolHistory).filter_by(id=protocol_id).first()
         if history:
             history.human_approved = feedback.approved
             history.human_feedback = feedback.feedback
-            if feedback.edits:
-                history.final_protocol = feedback.edits
-            elif feedback.approved:
-                # If approved without edits, use current draft as final
-                history.final_protocol = state.values.get("current_draft")
-            history.completed_at = datetime.utcnow()
+            
+            if feedback.approved:
+                # On approval, set final protocol and completion time
+                if feedback.edits:
+                    history.final_protocol = feedback.edits
+                else:
+                    history.final_protocol = state.values.get("current_draft")
+                history.completed_at = datetime.utcnow()
+                print(f"[FEEDBACK] Database updated: final_protocol saved, completed_at set")
+            else:
+                # On revision, update final_protocol with edits but don't set completed_at
+                if feedback.edits:
+                    history.final_protocol = feedback.edits
+                    print(f"[FEEDBACK] Database updated: final_protocol updated with edits")
+            
             db.commit()
         db.close()
         
@@ -371,6 +429,64 @@ async def submit_human_feedback(protocol_id: str, feedback: HumanFeedback):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/protocols/{protocol_id}/save")
+async def save_draft(protocol_id: str, request: dict):
+    """
+    Save the current draft to the database and update the graph state with a new version.
+    """
+    try:
+        draft_content = request.get("draft")
+        if not draft_content:
+            raise HTTPException(status_code=400, detail="Draft content is required")
+        
+        config = {"configurable": {"thread_id": protocol_id}}
+        
+        # Get current state
+        state = graph.get_state(config)
+        if not state or not state.values:
+            raise HTTPException(status_code=404, detail="Protocol not found in graph")
+        
+        # Create new draft version
+        from backend.models.state import DraftVersion, AgentRole
+        from datetime import datetime
+        
+        current_versions = state.values.get("draft_versions", [])
+        new_version_number = len(current_versions) + 1
+        
+        new_version = DraftVersion(
+            version=new_version_number,
+            content=draft_content,
+            timestamp=datetime.utcnow(),
+            created_by=AgentRole.HUMAN  # Mark as human-edited
+        )
+        
+        # Update the graph state - use operator.add by passing a list with the new version
+        update = {
+            "current_draft": draft_content,
+            "draft_versions": [new_version]  # operator.add will append this
+        }
+        
+        graph.update_state(config, update)
+        print(f"[SAVE] Draft saved and new version created: v{new_version_number}")
+        
+        # Also update database history
+        db = SessionLocal()
+        history = db.query(ProtocolHistory).filter_by(id=protocol_id).first()
+        if history:
+            history.final_protocol = draft_content
+            db.commit()
+        db.close()
+        
+        return {"status": "success", "message": "Draft saved successfully", "version": new_version_number}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
